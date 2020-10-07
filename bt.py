@@ -17,11 +17,14 @@ DEFAULT_MQTT_PORT = 1833
 DEFAULT_MQTT_PROTOCOL = 'MQTTv311'
 
 class BluetoothDevice:
-    def __init__(self, address, scan_interval, lookup_timeout, lookup_rssi):
+    def __init__(self, address, scan_interval, lookup_timeout, lookup_rssi, rssi=None, name=None, present=False):
         self.address = address
         self.scan_interval = scan_interval
         self.lookup_timeout = lookup_timeout
         self.lookup_rssi = lookup_rssi
+        self.name = name
+        self.rssi = rssi
+        self.present = present
 
 class BluetoothDeviceConfuseTemplate(confuse.Template):
     DEFAULT_SCAN_INTERVAL = 10
@@ -83,25 +86,17 @@ class BluetoothInfoRetriever:
             client.close()
             return rssi
 
-        bt_device_info = {}
-
-        device_name = lookup_device_name(device.address, device.lookup_timeout)
-        if device_name != None:
-            bt_device_info['name'] = device_name
-        else:
+        device.name = lookup_device_name(device.address, device.lookup_timeout)
+        if device.name == None:
             logging.debug("device '{}' not found".format(device.address))
 
         if device.lookup_rssi:
-            rssi = lookup_device_rssi(device.address)
-            if rssi != None:
-                bt_device_info['rssi'] = rssi
-            else:
+            device.rssi = lookup_device_rssi(device.address)
+            if device.rssi == None:
                 logging.debug("no rssi value found for device '{}'".format(device.address))
 
-        if not bool(bt_device_info):
-            return None
-        else:
-            return bt_device_info
+        device.present = device.name != None or device.rssi != None
+        logging.info("device '{}' present: {}".format(device.address, device.present))
 
 class BluetoothDeviceProcessor:
     def __init__(self, device: BluetoothDevice, bt: BluetoothInfoRetriever):
@@ -157,6 +152,7 @@ def main():
     }
 
     logging.basicConfig()
+    logging.getLogger().setLevel(logging.INFO)
     logging.getLogger('apscheduler').setLevel(logging.INFO)
 
     config = confuse.Configuration('bluetooth_tracker', __name__).get(config_template)
