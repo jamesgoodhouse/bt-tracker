@@ -1,7 +1,8 @@
 from apscheduler.job import Job
-from apscheduler.jobstores.base import BaseJobStore
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+import asyncio
 import bluetooth
 from bt_proximity import BluetoothRSSI
 import confuse
@@ -77,24 +78,20 @@ class BluetoothInfoRetriever:
         self.rssi_scanner = rssi_scanner
         self.lookup_name_func = lookup_name_func
 
-    def lookup_bluetooth_device(self, device: BluetoothDevice):
-        def lookup_device_name(addr, timeout):
+    async def lookup_bluetooth_device(self, device: BluetoothDevice):
+        async def lookup_device_name(addr, timeout):
             return self.lookup_name_func(addr, timeout)
 
-        def lookup_device_rssi(addr):
+        async def lookup_device_rssi(addr):
             client = self.rssi_scanner(addr)
             rssi = client.request_rssi()
             client.close()
             return rssi
 
-        device.name = lookup_device_name(device.address, device.lookup_timeout)
-        if device.name == None:
-            logging.debug("device '{}' not found".format(device.address))
-
+        tasks = [asyncio.create_task(lookup_device_name(device.address, device.lookup_timeout))]
         if device.lookup_rssi:
-            device.rssi = lookup_device_rssi(device.address)
-            if device.rssi == None:
-                logging.debug("no rssi value found for device '{}'".format(device.address))
+            tasks.append(asyncio.create_task(lookup_device_rssi(device.address)))
+        device.name, device.rssi = await asyncio.gather(*tasks)
 
         if device.name != None or device.rssi != None:
             device.last_seen = datetime.now()
@@ -110,12 +107,11 @@ class BluetoothDeviceProcessor:
         self.device = device
         self.bt = bt
 
-    def update_device_presence(self):
-        d = self.lookup_bluetooth()
-        # print(d)
+    async def update_device_presence(self):
+        await self.lookup_device()
 
-    def lookup_bluetooth(self):
-        return self.bt.lookup_bluetooth_device(self.device)
+    async def lookup_device(self):
+        await self.bt.lookup_bluetooth_device(self.device)
 
 class GracefulKiller:
     kill_now = False
@@ -145,7 +141,7 @@ class FakeBluetoothScanner:
 def lookup(addr, timeout):
     return 'tacobell'
 
-def main():
+async def main():
     config_template = {
         'devices': confuse.Sequence(
             # BluetoothDeviceConfuseTemplate(default_scan_interval=15, default_lookup_rssi=True),
@@ -168,17 +164,17 @@ def main():
     mqtt_client.connect(host=config.mqtt.host, port=config.mqtt.port)
     mqtt_client.loop_start()
 
-    scheduler = BackgroundScheduler()
+    scheduler = AsyncIOScheduler()
+
+    # bt_tracker = BluetoothInfoRetriever()
+    bt_tracker = BluetoothInfoRetriever(rssi_scanner=FakeBluetoothScanner, lookup_name_func=lookup)
 
     for device in config.devices:
-        # bt_tracker = BluetoothInfoRetriever(rssi_scanner=FakeBluetoothScanner, lookup_name_func=lookup)
-        bt_tracker = BluetoothInfoRetriever()
         btdp = BluetoothDeviceProcessor(device, bt_tracker)
         scheduler.add_job(
             name = device.address,
             func = btdp.update_device_presence,
-            trigger = 'interval',
-            seconds = device.scan_interval,
+            trigger = IntervalTrigger(seconds=device.scan_interval),
             next_run_time = datetime.now(),
         )
 
@@ -187,9 +183,9 @@ def main():
     scheduler.start()
 
     while not killer.kill_now:
-        sleep(1)
+        await asyncio.sleep(1)
 
     scheduler.shutdown()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
