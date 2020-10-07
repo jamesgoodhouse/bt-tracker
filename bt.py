@@ -1,15 +1,16 @@
-from apscheduler.job import Job
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
 import asyncio
 import bluetooth
-from bt_proximity import BluetoothRSSI
 import confuse
-from datetime import datetime
 import logging
 import paho.mqtt.client as mqtt
 import re
 import signal
+
+from apscheduler.job import Job
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from bt_proximity import BluetoothRSSI
+from datetime import datetime
 from time import sleep
 
 DEFAULT_MQTT_HOST = 'localhost'
