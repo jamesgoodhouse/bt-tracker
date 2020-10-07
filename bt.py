@@ -1,24 +1,132 @@
+from apscheduler.job import Job
+from apscheduler.jobstores.base import BaseJobStore
+from apscheduler.schedulers.background import BlockingScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 import bluetooth
 from bt_proximity import BluetoothRSSI
 import confuse
+from datetime import datetime
+import logging
 import paho.mqtt.client as mqtt
-from time import sleep
-import threading
+import re
 
-DEFAULT_SCAN_INTERVAL = 10
-DEFAULT_DEVICE_LOOKUP_TIMEOUT = 5
-DEFAULT_DEVICE_LOOKUP_RSSI = False
-MAC_ADDRESS_PATTERN = '([0-9a-fA-F]:?){12}'
+DEFAULT_MQTT_HOST = 'localhost'
+DEFAULT_MQTT_PORT = 1833
+DEFAULT_MQTT_PROTOCOL = 'MQTTv311'
 
-_config_template = {
+class BluetoothDevice:
+    def __init__(self, address, scan_interval, lookup_timeout, lookup_rssi):
+        self.address = address
+        self.scan_interval = scan_interval
+        self.lookup_timeout = lookup_timeout
+        self.lookup_rssi = lookup_rssi
+
+class BluetoothDeviceConfuseTemplate(confuse.Template):
+    DEFAULT_SCAN_INTERVAL = 10
+    DEFAULT_LOOKUP_TIMEOUT = 5
+    DEFAULT_LOOKUP_RSSI = False
+    MAC_ADDRESS_PATTERN = '([0-9a-fA-F]:?){12}'
+
+    # FIXME: this is kinda rough
+    def convert(self, value, view):
+        if 'address' not in value:
+            raise confuse.exceptions.NotFoundError(u'\'address\' is required')
+        if not re.match(self.MAC_ADDRESS_PATTERN, value['address']):
+            raise confuse.exceptions.ConfigValueError(u'\'address\' not a valid MAC address')
+
+        address = value['address']
+
+        scan_interval = self.DEFAULT_SCAN_INTERVAL
+        if 'scan_interval' in value:
+            si = value['scan_interval']
+            if isinstance(si, int):
+                scan_interval = si
+            elif isinstance(si, float):
+                return int(si)
+            else:
+                raise confuse.exceptions.ConfigValueError(u'\'scan_interval\' must be an integer')
+
+        lookup_timeout = self.DEFAULT_LOOKUP_TIMEOUT
+        if 'lookup_timeout' in value:
+            lt = value['lookup_timeout']
+            if isinstance(lt, int):
+                lookup_timeout = lt
+            elif isinstance(lt, float):
+                return int(lt)
+            else:
+                raise confuse.exceptions.ConfigValueError(u'\'lookup_timeout\' must be an integer')
+
+        lookup_rssi = self.DEFAULT_LOOKUP_RSSI
+        if 'lookup_rssi' in value:
+            lr = value['lookup_rssi']
+            if isinstance(lr, bool):
+                lookup_rssi = lr
+            else:
+                raise confuse.exceptions.ConfigValueError(u'\'lookup_rssi\' must be a boolean')
+
+        return BluetoothDevice(address, scan_interval, lookup_timeout, lookup_rssi)
+
+class BluetoothInfoRetriever:
+    def __init__(self, rssi_scanner=BluetoothRSSI, lookup_name_func=bluetooth.lookup_name):
+        self.rssi_scanner = rssi_scanner
+        self.lookup_name_func = lookup_name_func
+
+    def lookup_bluetooth_device(self, device: BluetoothDevice):
+        def lookup_device_name(addr, timeout):
+            return self.lookup_name_func(addr, timeout)
+
+        def lookup_device_rssi(addr):
+            client = self.rssi_scanner(addr)
+            rssi = client.request_rssi()
+            client.close()
+            logging.warning(rssi)
+            return rssi
+
+        bt_device_info = {}
+
+        device_name = lookup_device_name(device.address, device.lookup_timeout)
+        if device_name != None:
+            bt_device_info['name'] = device_name
+            logging.error(device_name)
+        else:
+            logging.debug("device '{}' not found".format(device.address))
+
+        if device.lookup_rssi:
+            rssi = lookup_device_rssi(device.address)
+            logging.error(rssi)
+            if rssi != None:
+                bt_device_info['rssi'] = rssi
+            else:
+                logging.debug("no rssi value found for device '{}'".format(device.address))
+
+        if not bool(bt_device_info):
+            return None
+        else:
+            return bt_device_info
+
+class BluetoothDeviceProcessor:
+    def __init__(self, device: BluetoothDevice, bt: BluetoothInfoRetriever):
+        self.device = device
+        self.bt = bt
+
+    def update_device_presence(self):
+        d = self.lookup_bluetooth()
+        # print(d)
+
+    def lookup_bluetooth(self):
+        return self.bt.lookup_bluetooth_device(self.device)
+
+
+config_template = {
     'devices': confuse.Sequence(
-        {
-            'address': confuse.String(pattern=MAC_ADDRESS_PATTERN),
-            'lookup_rssi': confuse.Choice(choices=[True, False], default=DEFAULT_DEVICE_LOOKUP_RSSI),
-            'timeout': confuse.Integer(default=DEFAULT_DEVICE_LOOKUP_TIMEOUT),
-        }
+        # BluetoothDeviceConfuseTemplate(default_scan_interval=15, default_lookup_rssi=True),
+        BluetoothDeviceConfuseTemplate(),
     ),
-    'scan_interval': confuse.Integer(default=DEFAULT_SCAN_INTERVAL),
+    'mqtt': {
+        'host': confuse.String(default=DEFAULT_MQTT_HOST),
+        'port': confuse.Integer(default=DEFAULT_MQTT_PORT),
+        'protocol': confuse.String(default=DEFAULT_MQTT_PROTOCOL),
+    },
 }
 
 class FakeBluetoothScanner:
@@ -26,79 +134,39 @@ class FakeBluetoothScanner:
         self.mac = mac
 
     def request_rssi(self):
-        return 42
+        return 59
 
-class BluetoothTracker:
-    def __init__(self, config, rssi_scanner=BluetoothRSSI, lookup_func=bluetooth.lookup_name):
-        self.lookup_name_func = lookup_func
-        self.__config = config
-        self.__rssi_scanner = rssi_scanner
-        self.__threads = []
-
-    def listen(self, device, callback):
-        rssi_scanner = self.__rssi_scanner(device.address)
-        while True:
-            name = self.lookup_name_func(device.address, device.timeout)
-            rssi = rssi_scanner.request_rssi()
-            if name is None and rssi is None:
-                sleep(self.__config.scan_interval)
-                continue
-            callback(name, rssi)
-            sleep(self.__config.scan_interval)
-
-    def __start_thread(self, device, callback):
-        thread = threading.Thread(
-            target=self.listen,
-            args=(),
-            kwargs={
-                'device': device,
-                'callback': callback,
-            }
-        )
-        # Daemonize
-        thread.daemon = True
-        print('starting thread')
-        # Start the threau
-        thread.start()
-        return thread
-
-    def start(self, callback):
-        for device in self.__config.devices:
-            th = self.__start_thread(device=device, callback=callback)
-            self.__threads.append(th)
-
-    def track_devices(self):
-        for device in self.__config.devices:
-            print("looking up '{}'".format(device.address))
-            name = self.lookup_name_func(device.address, device.timeout)
-
-            if name != None:
-                print("found '{}'".format(name))
-
-                if device.lookup_rssi:
-                    rssi = self.__rssi_scanner(device.address).request_rssi()
-                    print("'{}' has RSSI of '{}'".format(name, rssi))
-            else:
-                print("'{}' not found".format(device.address))
+    def close(self):
+        return
 
 def lookup(addr, timeout):
-    print("looking up '{}' with '{}' timeout".format(addr, timeout))
-    return "balls"
-
-def balls(name, rssi):
-    print("callback for '{}' with rssi of '{}'".format(name, rssi))
+    return 'tacobell'
 
 def main():
-    config = confuse.Configuration('bluetooth_tracker', __name__)
-    bt = BluetoothTracker(config.get(_config_template), mqtt_client, rssi_scanner=FakeBluetoothScanner, lookup_func=lookup)
-    # bt = BluetoothTracker(config.get(_config_template), mqtt_client)
+    logging.basicConfig()
+    logging.getLogger('apscheduler').setLevel(logging.INFO)
 
-    bt.start(balls)
+    config = confuse.Configuration('bluetooth_tracker', __name__).get(config_template)
 
-    # bt.track_devices()
-    # sleep(15)
-    while True:
-        sleep(1)
+    mqtt_client = mqtt.Client()
+    mqtt_client.connect(host=config.mqtt.host, port=config.mqtt.port)
+    mqtt_client.loop_start()
+
+    scheduler = BlockingScheduler()
+
+    for device in config.devices:
+        # bt_tracker = BluetoothInfoRetriever(rssi_scanner=FakeBluetoothScanner, lookup_name_func=lookup)
+        bt_tracker = BluetoothInfoRetriever()
+        btdp = BluetoothDeviceProcessor(device, bt_tracker)
+        scheduler.add_job(
+            name = device.address,
+            func = btdp.update_device_presence,
+            trigger = 'interval',
+            seconds = device.scan_interval,
+            next_run_time = datetime.now(),
+        )
+
+    scheduler.start()
 
 if __name__ == "__main__":
     main()

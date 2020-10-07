@@ -1,0 +1,5 @@
+apscheduler ~= 3.6
+bt_proximity
+confuse ~= 1.3
+paho-mqtt ~= 1.5
+pybluez ~= 0.23
