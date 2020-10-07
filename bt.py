@@ -17,13 +17,14 @@ DEFAULT_MQTT_PORT = 1833
 DEFAULT_MQTT_PROTOCOL = 'MQTTv311'
 
 class BluetoothDevice:
-    def __init__(self, address, scan_interval, lookup_timeout, lookup_rssi, rssi=None, name=None, present=False):
+    def __init__(self, address, scan_interval, lookup_timeout, lookup_rssi, rssi=None, name=None, present=False, last_seen=None):
         self.address = address
         self.scan_interval = scan_interval
         self.lookup_timeout = lookup_timeout
         self.lookup_rssi = lookup_rssi
         self.name = name
         self.rssi = rssi
+        self.last_seen = last_seen
         self.present = present
 
 class BluetoothDeviceConfuseTemplate(confuse.Template):
@@ -95,7 +96,13 @@ class BluetoothInfoRetriever:
             if device.rssi == None:
                 logging.debug("no rssi value found for device '{}'".format(device.address))
 
-        device.present = device.name != None or device.rssi != None
+        if device.name != None or device.rssi != None:
+            device.last_seen = datetime.now()
+            device.present = True
+        else:
+            device.last_seen = None
+            device.present = False
+
         logging.info("device '{}' present: {}".format(device.address, device.present))
 
 class BluetoothDeviceProcessor:
