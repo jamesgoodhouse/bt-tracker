@@ -93,14 +93,19 @@ class BluetoothInfoRetriever:
             tasks.append(asyncio.create_task(lookup_device_rssi(device.address)))
         device.name, device.rssi = await asyncio.gather(*tasks)
 
+        if device.name == None:
+            logging.debug("no name found for device '{}'".format(device.address))
+        if device.rssi == None:
+            logging.debug("no rssi found for device '{}'".format(device.address))
+
         if device.name != None or device.rssi != None:
+            logging.info("device '{}' found".format(device.address))
             device.last_seen = datetime.now()
             device.present = True
         else:
+            logging.info("device '{}' not found".format(device.address))
             device.last_seen = None
             device.present = False
-
-        logging.info("device '{}' present: {}".format(device.address, device.present))
 
 class BluetoothDeviceProcessor:
     def __init__(self, device: BluetoothDevice, bt: BluetoothInfoRetriever):
@@ -115,17 +120,16 @@ class BluetoothDeviceProcessor:
 
 class GracefulKiller:
     kill_now = False
-    signals = {
-        signal.SIGINT: 'SIGINT',
-        signal.SIGTERM: 'SIGTERM',
-    }
 
     def __init__(self):
-        signal.signal(signal.SIGINT, self.exit_gracefully)
-        signal.signal(signal.SIGTERM, self.exit_gracefully)
+        for signame in {'SIGINT', 'SIGTERM'}:
+            signal.signal(
+                getattr(signal, signame),
+                self.exit_gracefully,
+            )
 
     def exit_gracefully(self, signum, frame):
-        logging.debug("\nReceived {} signal".format(self.signals[signum]))
+        logging.info("Received '{}' signal".format(signal.strsignal(signum)))
         self.kill_now = True
 
 class FakeBluetoothScanner:
@@ -147,18 +151,26 @@ async def main():
             # BluetoothDeviceConfuseTemplate(default_scan_interval=15, default_lookup_rssi=True),
             BluetoothDeviceConfuseTemplate(),
         ),
+        'log_level': confuse.Choice(['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG'], default='INFO'),
         'mqtt': {
             'host': confuse.String(default=DEFAULT_MQTT_HOST),
             'port': confuse.Integer(default=DEFAULT_MQTT_PORT),
             'protocol': confuse.String(default=DEFAULT_MQTT_PROTOCOL),
         },
+        'scheduler': {
+            'log_level': confuse.Choice(['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG'], default=None),
+        },
     }
+    config = confuse.Configuration('bluetooth_tracker', __name__).get(config_template)
 
     logging.basicConfig()
-    logging.getLogger().setLevel(logging.INFO)
-    logging.getLogger('apscheduler').setLevel(logging.INFO)
+    log_level = getattr(logging, config.log_level) # logging.getLevelName works, but that func shouldnt do what it does
+    logging.getLogger().setLevel(log_level)
 
-    config = confuse.Configuration('bluetooth_tracker', __name__).get(config_template)
+    scheduler_log_level = log_level
+    if config.scheduler.log_level != None:
+        scheduler_log_level = config.scheduler.log_level
+    logging.getLogger('apscheduler').setLevel(scheduler_log_level)
 
     mqtt_client = mqtt.Client()
     mqtt_client.connect(host=config.mqtt.host, port=config.mqtt.port)
