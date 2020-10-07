@@ -1,6 +1,6 @@
 from apscheduler.job import Job
 from apscheduler.jobstores.base import BaseJobStore
-from apscheduler.schedulers.background import BlockingScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import bluetooth
 from bt_proximity import BluetoothRSSI
@@ -9,6 +9,8 @@ from datetime import datetime
 import logging
 import paho.mqtt.client as mqtt
 import re
+import signal
+from time import sleep
 
 DEFAULT_MQTT_HOST = 'localhost'
 DEFAULT_MQTT_PORT = 1833
@@ -79,7 +81,6 @@ class BluetoothInfoRetriever:
             client = self.rssi_scanner(addr)
             rssi = client.request_rssi()
             client.close()
-            logging.warning(rssi)
             return rssi
 
         bt_device_info = {}
@@ -87,13 +88,11 @@ class BluetoothInfoRetriever:
         device_name = lookup_device_name(device.address, device.lookup_timeout)
         if device_name != None:
             bt_device_info['name'] = device_name
-            logging.error(device_name)
         else:
             logging.debug("device '{}' not found".format(device.address))
 
         if device.lookup_rssi:
             rssi = lookup_device_rssi(device.address)
-            logging.error(rssi)
             if rssi != None:
                 bt_device_info['rssi'] = rssi
             else:
@@ -116,18 +115,20 @@ class BluetoothDeviceProcessor:
     def lookup_bluetooth(self):
         return self.bt.lookup_bluetooth_device(self.device)
 
+class GracefulKiller:
+    kill_now = False
+    signals = {
+        signal.SIGINT: 'SIGINT',
+        signal.SIGTERM: 'SIGTERM',
+    }
 
-config_template = {
-    'devices': confuse.Sequence(
-        # BluetoothDeviceConfuseTemplate(default_scan_interval=15, default_lookup_rssi=True),
-        BluetoothDeviceConfuseTemplate(),
-    ),
-    'mqtt': {
-        'host': confuse.String(default=DEFAULT_MQTT_HOST),
-        'port': confuse.Integer(default=DEFAULT_MQTT_PORT),
-        'protocol': confuse.String(default=DEFAULT_MQTT_PROTOCOL),
-    },
-}
+    def __init__(self):
+        signal.signal(signal.SIGINT, self.exit_gracefully)
+        signal.signal(signal.SIGTERM, self.exit_gracefully)
+
+    def exit_gracefully(self, signum, frame):
+        logging.debug("\nReceived {} signal".format(self.signals[signum]))
+        self.kill_now = True
 
 class FakeBluetoothScanner:
     def __init__(self, mac):
@@ -143,6 +144,18 @@ def lookup(addr, timeout):
     return 'tacobell'
 
 def main():
+    config_template = {
+        'devices': confuse.Sequence(
+            # BluetoothDeviceConfuseTemplate(default_scan_interval=15, default_lookup_rssi=True),
+            BluetoothDeviceConfuseTemplate(),
+        ),
+        'mqtt': {
+            'host': confuse.String(default=DEFAULT_MQTT_HOST),
+            'port': confuse.Integer(default=DEFAULT_MQTT_PORT),
+            'protocol': confuse.String(default=DEFAULT_MQTT_PROTOCOL),
+        },
+    }
+
     logging.basicConfig()
     logging.getLogger('apscheduler').setLevel(logging.INFO)
 
@@ -152,7 +165,7 @@ def main():
     mqtt_client.connect(host=config.mqtt.host, port=config.mqtt.port)
     mqtt_client.loop_start()
 
-    scheduler = BlockingScheduler()
+    scheduler = BackgroundScheduler()
 
     for device in config.devices:
         # bt_tracker = BluetoothInfoRetriever(rssi_scanner=FakeBluetoothScanner, lookup_name_func=lookup)
@@ -166,7 +179,14 @@ def main():
             next_run_time = datetime.now(),
         )
 
+    killer = GracefulKiller()
+
     scheduler.start()
+
+    while not killer.kill_now:
+        sleep(1)
+
+    scheduler.shutdown()
 
 if __name__ == "__main__":
     main()

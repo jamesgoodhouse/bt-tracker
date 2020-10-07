@@ -10,4 +10,4 @@ echo starting bluetoothd
 /usr/lib/bluetooth/bluetoothd --debug &
 sleep 5
 
-python3 -u /bt.py
+exec python3 /bt.py
