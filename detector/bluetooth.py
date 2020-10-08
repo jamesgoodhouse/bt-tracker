@@ -136,8 +136,8 @@ class BluetoothDeviceConfuseTemplate(confuse.Template):
 
         return BluetoothDevice(
             address,
-            scan_interval=scan_interval,
             lookup_timeout=lookup_timeout,
             lookup_rssi=lookup_rssi,
             publish_to_mqtt=publish_to_mqtt,
+            scan_interval=scan_interval,
         )

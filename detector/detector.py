@@ -1,55 +1,18 @@
 import asyncio
 import bluetooth
-import confuse
 import logging
-import paho.mqtt.client as mqtt
-import signal
 
-from apscheduler.job import Job
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from bluetooth_device import BluetoothDevice
-from bluetooth_device import BluetoothDeviceConfuseTemplate
 from bt_proximity import BluetoothRSSI
 from datetime import datetime
+from detector.bluetooth import BluetoothDevice
 
-DEFAULT_LOG_LEVEL = 'INFO'
-DEFAULT_MQTT_HOST = 'localhost'
-DEFAULT_MQTT_LOG_LEVEL = None
-DEFAULT_MQTT_PORT = 1833
-DEFAULT_MQTT_PROTOCOL = 'MQTTv311'
-DEFAULT_SCHEDULER_LOG_LEVEL = None
-
-class GracefulKiller:
-    kill_now = False
-
-    def __init__(self):
-        for signame in {'SIGINT', 'SIGTERM'}:
-            signal.signal(
-                getattr(signal, signame),
-                self.exit_gracefully,
-            )
-
-    def exit_gracefully(self, signum, frame):
-        logging.debug("received '{}' signal".format(signal.strsignal(signum)))
-        self.kill_now = True
-
-class FakeBluetoothScanner:
-    def __init__(self, mac):
-        self.mac = mac
-
-    def request_rssi(self):
-        return (42,)
-
-    def close(self):
-        return
-
-class BluetoothPresenceDetector:
+class Detector:
     def __init__(
         self,
         config,
         mqtt_client,
-        scheduler: AsyncIOScheduler,
+        scheduler,
         bluetooth_lookup_name_func=bluetooth.lookup_name,
         bluetooth_rssi_scanner=BluetoothRSSI,
     ):
@@ -134,47 +97,3 @@ class BluetoothPresenceDetector:
 
         if self.config.mqtt.enabled and device.publish_to_mqtt:
             await asyncio.create_task(self.publish_device(device))
-
-def lookup(*_):
-    return 'test'
-
-async def main():
-    log_levels = ['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG']
-    config_template = {
-        'devices': confuse.Sequence(
-            BluetoothDeviceConfuseTemplate(),
-        ),
-        'log_level': confuse.Choice(log_levels, default=DEFAULT_LOG_LEVEL),
-        'mqtt': {
-            'enabled': confuse.Choice([True, False], default=False),
-            'host': confuse.String(default=DEFAULT_MQTT_HOST),
-            'log_level': confuse.Choice(['ERROR', 'WARNING', 'INFO', 'DEBUG'], default=DEFAULT_MQTT_LOG_LEVEL),
-            'port': confuse.Integer(default=DEFAULT_MQTT_PORT),
-            'protocol': confuse.String(default=DEFAULT_MQTT_PROTOCOL),
-        },
-        'scheduler': {
-            'log_level': confuse.Choice(log_levels, default=DEFAULT_SCHEDULER_LOG_LEVEL),
-        },
-    }
-    config = confuse.Configuration('bluetooth_tracker', __name__).get(config_template)
-
-    kwargs = {}
-    kwargs['bluetooth_rssi_scanner'] = FakeBluetoothScanner
-    kwargs['bluetooth_lookup_name_func'] = lookup
-    detector = BluetoothPresenceDetector(
-        config,
-        mqtt.Client(),
-        AsyncIOScheduler(),
-        **kwargs,
-    )
-    detector.start_detecting()
-
-    killer = GracefulKiller()
-    while not killer.kill_now:
-        await asyncio.sleep(1)
-
-    logging.info('shutting down')
-    detector.stop_detecting()
-
-if __name__ == "__main__":
-    asyncio.run(main())
