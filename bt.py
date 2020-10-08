@@ -164,19 +164,60 @@ class FakeBluetoothScanner:
         self.mac = mac
 
     def request_rssi(self):
-        return None
+        return 42
 
     def close(self):
         return
 
-def lookup(addr, timeout):
-    return None
+class BluetoothPresenceDetector:
+    def __init__(
+        self,
+        config,
+        bt: BluetoothInfoRetriever,
+        mqtt_client,
+        scheduler: AsyncIOScheduler,
+    ):
+        self.config = config
+        self.bt = bt
+        self.mqtt = mqtt_client
+        self.scheduler = scheduler
+
+        log_level = getattr(logging, config.log_level) # logging.getLevelName works, but that func shouldnt do what it does
+        logging.basicConfig(level=log_level)
+
+        scheduler_log_level = log_level
+        if config.scheduler.log_level != None:
+            scheduler_log_level = config.scheduler.log_level
+        logging.getLogger('apscheduler').setLevel(scheduler_log_level)
+
+        for device in config.devices:
+            self.scheduler.add_job(
+                name = device.address,
+                func = self.detect_device,
+                args = [device],
+                trigger = IntervalTrigger(seconds=device.scan_interval),
+                next_run_time = datetime.now(),
+            )
+
+    def start_detecting(self):
+        self.mqtt.connect(host=self.config.mqtt.host, port=self.config.mqtt.port)
+        self.mqtt.loop_start()
+        self.scheduler.start()
+
+    def stop_detecting(self):
+        self.scheduler.shutdown()
+        self.mqtt.loop_stop()
+
+    async def detect_device(self, device: BluetoothDevice):
+        await self.bt.lookup_bluetooth_device(device)
+
+def lookup(*_):
+    return 'test'
 
 async def main():
     log_levels = ['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG']
     config_template = {
         'devices': confuse.Sequence(
-            # BluetoothDeviceConfuseTemplate(default_scan_interval=15, default_lookup_rssi=True),
             BluetoothDeviceConfuseTemplate(),
         ),
         'log_level': confuse.Choice(log_levels, default=DEFAULT_LOG_LEVEL),
@@ -191,41 +232,22 @@ async def main():
     }
     config = confuse.Configuration('bluetooth_tracker', __name__).get(config_template)
 
-    log_level = getattr(logging, config.log_level) # logging.getLevelName works, but that func shouldnt do what it does
-    logging.basicConfig(level=log_level)
-
-    scheduler_log_level = log_level
-    if config.scheduler.log_level != None:
-        scheduler_log_level = config.scheduler.log_level
-    logging.getLogger('apscheduler').setLevel(scheduler_log_level)
-
-    mqtt_client = mqtt.Client()
-    mqtt_client.connect(host=config.mqtt.host, port=config.mqtt.port)
-    mqtt_client.loop_start()
-
-    scheduler = AsyncIOScheduler()
-
     # bt_tracker = BluetoothInfoRetriever()
     bt_tracker = BluetoothInfoRetriever(rssi_scanner=FakeBluetoothScanner, lookup_name_func=lookup)
-
-    for device in config.devices:
-        btdp = BluetoothDeviceProcessor(device, bt_tracker)
-        scheduler.add_job(
-            name = device.address,
-            func = btdp.update_device_presence,
-            trigger = IntervalTrigger(seconds=device.scan_interval),
-            next_run_time = datetime.now(),
-        )
+    detector = BluetoothPresenceDetector(
+        config,
+        bt_tracker,
+        mqtt.Client(),
+        AsyncIOScheduler(),
+    )
+    detector.start_detecting()
 
     killer = GracefulKiller()
-
-    scheduler.start()
-
     while not killer.kill_now:
         await asyncio.sleep(1)
 
     logging.info('shutting down')
-    scheduler.shutdown()
+    detector.stop_detecting()
 
 if __name__ == "__main__":
     asyncio.run(main())
