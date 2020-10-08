@@ -1,28 +1,77 @@
+import asyncio
+import bluetooth
 import confuse
+import logging
 import re
 
+from bt_proximity import BluetoothRSSI
+from datetime import datetime
+
 class BluetoothDevice:
+    DEFAULT_LOOKUP_RSSI = False
+    DEFAULT_LOOKUP_TIMEOUT = 10
+    DEFAULT_PUBLISH_TO_MQTT = False
+    DEFAULT_SCAN_INTERVAL = 60
+
     def __init__(
         self,
         address,
-        scan_interval,
-        lookup_timeout,
-        lookup_rssi,
-        publish_to_mqtt,
-        rssi=None,
+        last_seen=None,
+        logger=logging.getLogger('bluetooth'),
+        lookup_rssi=DEFAULT_LOOKUP_RSSI,
+        lookup_timeout=DEFAULT_LOOKUP_TIMEOUT,
         name=None,
         present=False,
-        last_seen=None,
+        publish_to_mqtt=DEFAULT_PUBLISH_TO_MQTT,
+        rssi=None,
+        scan_interval=DEFAULT_SCAN_INTERVAL,
     ):
         self.address = address
-        self.scan_interval = scan_interval
-        self.lookup_timeout = lookup_timeout
-        self.lookup_rssi = lookup_rssi
-        self.publish_to_mqtt = publish_to_mqtt
-        self.name = name
-        self.rssi = rssi
         self.last_seen = last_seen
+        self.logger = logger
+        self.lookup_rssi = lookup_rssi
+        self.lookup_timeout = lookup_timeout
+        self.name = name
         self.present = present
+        self.publish_to_mqtt = publish_to_mqtt
+        self.rssi = rssi
+        self.scan_interval = scan_interval
+
+    async def lookup_device(
+        self,
+        lookup_name_func=bluetooth.lookup_name,
+        rssi_scanner=BluetoothRSSI,
+    ):
+        async def lookup_device_name(addr, timeout):
+            return lookup_name_func(addr, timeout)
+
+        async def lookup_device_rssi(addr):
+            client = rssi_scanner(addr)
+            rssi = client.request_rssi()
+            client.close()
+            return rssi
+
+        tasks = [asyncio.create_task(lookup_device_name(self.address, self.lookup_timeout))]
+        if self.lookup_rssi:
+            tasks.append(asyncio.create_task(lookup_device_rssi(self.address)))
+        self.name, self.rssi = await asyncio.gather(*tasks)
+
+        if self.name == None:
+            self.logger.debug("no name found for device '{}'".format(self.address))
+        else:
+            self.logger.debug("name '{}' found for device '{}'".format(self.name, self.address))
+        if self.rssi == None:
+            self.logger.debug("no rssi found for device '{}'".format(self.address))
+        else:
+            self.logger.debug("rssi '{}' found for device '{}'".format(self.rssi, self.address))
+
+        if self.name != None or self.rssi != None:
+            self.logger.info("device '{}' found".format(self.address))
+            self.last_seen = datetime.now()
+            self.present = True
+        else:
+            self.logger.info("device '{}' not found".format(self.address))
+            self.present = False
 
 class BluetoothDeviceConfuseTemplate(confuse.Template):
     DEFAULT_SCAN_INTERVAL = 10
@@ -88,4 +137,10 @@ class BluetoothDeviceConfuseTemplate(confuse.Template):
             else:
                 raise confuse.exceptions.ConfigValueError(u'\'publish_to_mqtt\' must be a boolean')
 
-        return BluetoothDevice(address, scan_interval, lookup_timeout, lookup_rssi, publish_to_mqtt)
+        return BluetoothDevice(
+            address,
+            scan_interval=scan_interval,
+            lookup_timeout=lookup_timeout,
+            lookup_rssi=lookup_rssi,
+            publish_to_mqtt=publish_to_mqtt,
+        )

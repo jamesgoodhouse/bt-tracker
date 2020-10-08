@@ -12,62 +12,13 @@ from bluetooth_device import BluetoothDevice
 from bluetooth_device import BluetoothDeviceConfuseTemplate
 from bt_proximity import BluetoothRSSI
 from datetime import datetime
-from time import sleep
 
 DEFAULT_LOG_LEVEL = 'INFO'
 DEFAULT_MQTT_HOST = 'localhost'
+DEFAULT_MQTT_LOG_LEVEL = None
 DEFAULT_MQTT_PORT = 1833
 DEFAULT_MQTT_PROTOCOL = 'MQTTv311'
 DEFAULT_SCHEDULER_LOG_LEVEL = None
-
-class BluetoothInfoRetriever:
-    def __init__(self, rssi_scanner=BluetoothRSSI, lookup_name_func=bluetooth.lookup_name):
-        self.logger = logging.getLogger('bluetooth')
-        self.rssi_scanner = rssi_scanner
-        self.lookup_name_func = lookup_name_func
-
-    async def lookup_bluetooth_device(self, device: BluetoothDevice):
-        async def lookup_device_name(addr, timeout):
-            return self.lookup_name_func(addr, timeout)
-
-        async def lookup_device_rssi(addr):
-            client = self.rssi_scanner(addr)
-            rssi = client.request_rssi()
-            client.close()
-            return rssi
-
-        tasks = [asyncio.create_task(lookup_device_name(device.address, device.lookup_timeout))]
-        if device.lookup_rssi:
-            tasks.append(asyncio.create_task(lookup_device_rssi(device.address)))
-        device.name, device.rssi = await asyncio.gather(*tasks)
-
-        if device.name == None:
-            self.logger.debug("no name found for device '{}'".format(device.address))
-        else:
-            self.logger.debug("name '{}' found for device '{}'".format(device.name, device.address))
-        if device.rssi == None:
-            self.logger.debug("no rssi found for device '{}'".format(device.address))
-        else:
-            self.logger.debug("rssi '{}' found for device '{}'".format(device.rssi, device.address))
-
-        if device.name != None or device.rssi != None:
-            self.logger.info("device '{}' found".format(device.address))
-            device.last_seen = datetime.now()
-            device.present = True
-        else:
-            self.logger.info("device '{}' not found".format(device.address))
-            device.present = False
-
-class BluetoothDeviceProcessor:
-    def __init__(self, device: BluetoothDevice, bt: BluetoothInfoRetriever):
-        self.device = device
-        self.bt = bt
-
-    async def update_device_presence(self):
-        await self.lookup_device()
-
-    async def lookup_device(self):
-        await self.bt.lookup_bluetooth_device(self.device)
 
 class GracefulKiller:
     kill_now = False
@@ -97,28 +48,39 @@ class BluetoothPresenceDetector:
     def __init__(
         self,
         config,
-        bt: BluetoothInfoRetriever,
         mqtt_client,
         scheduler: AsyncIOScheduler,
+        bluetooth_lookup_name_func=bluetooth.lookup_name,
+        bluetooth_rssi_scanner=BluetoothRSSI,
     ):
         self.config = config
-        self.bt = bt
         self.mqtt = mqtt_client
         self.scheduler = scheduler
+        self.bluetooth_lookup_name_func = bluetooth_lookup_name_func
+        self.bluetooth_rssi_scanner = bluetooth_rssi_scanner
 
-        self.mqtt.enable_logger(logger=logging.getLogger('mqtt'))
+        # setup root logger
+        log_level = getattr(logging, config.log_level) # logging.getLevelName works, but that func shouldnt do what it does
+        logging.basicConfig(level=log_level)
+
+        # setup mqtt client
+        mqtt_log_level = log_level
+        if config.mqtt.log_level != None:
+            mqtt_log_level = getattr(logging, config.mqtt.log_level)
+        self.mqtt_logger = logging.getLogger('mqtt')
+        self.mqtt_logger.setLevel(mqtt_log_level)
+        self.mqtt.enable_logger(logger=self.mqtt_logger)
         self.mqtt.on_connect = self.mqtt_on_connect
         self.mqtt.on_message = self.mqtt_on_message
         self.mqtt.on_publish = self.mqtt_on_publish
 
-        log_level = getattr(logging, config.log_level) # logging.getLevelName works, but that func shouldnt do what it does
-        logging.basicConfig(level=log_level)
-
+        # configure scheduler
         scheduler_log_level = log_level
         if config.scheduler.log_level != None:
-            scheduler_log_level = config.scheduler.log_level
+            scheduler_log_level = getattr(logging, config.scheduler.log_level)
         logging.getLogger('apscheduler').setLevel(scheduler_log_level)
 
+        # schedule a job per device
         for device in config.devices:
             self.scheduler.add_job(
                 name = device.address,
@@ -129,7 +91,7 @@ class BluetoothPresenceDetector:
             )
 
     def mqtt_on_connect(self, client, userdata, flags, rc):
-        logging.getLogger('mqtt').debug("Connected with result code "+str(rc))
+        self.mqtt_logger.debug("Connected with result code "+str(rc))
 
     def mqtt_on_message(self, client, userdata, msg):
         return
@@ -156,16 +118,19 @@ class BluetoothPresenceDetector:
         self.mqtt.publish(topic, payload, retain, qos)
 
     async def publish_device(self, device: BluetoothDevice):
-        topic_prefix = 'bluetooth/'+device.address+'/'
+        topic_prefix = 'bluetooth/'+device.address
         await asyncio.gather(
-            asyncio.create_task(self.publish(topic_prefix+'rssi', device.rssi, True, 1)),
-            asyncio.create_task(self.publish(topic_prefix+'last_seen', int(device.last_seen.timestamp()), True, 1)),
-            asyncio.create_task(self.publish(topic_prefix+'present', device.present, True, 1)),
-            asyncio.create_task(self.publish(topic_prefix+'name', device.name, True, 1)),
+            asyncio.create_task(self.publish(topic_prefix+'/rssi', device.rssi, True, 1)),
+            asyncio.create_task(self.publish(topic_prefix+'/last_seen', int(device.last_seen.timestamp()), True, 1)),
+            asyncio.create_task(self.publish(topic_prefix+'/present', device.present, True, 1)),
+            asyncio.create_task(self.publish(topic_prefix+'/name', device.name, True, 1)),
         )
 
     async def detect_device(self, device: BluetoothDevice):
-        await self.bt.lookup_bluetooth_device(device)
+        await device.lookup_device(
+            lookup_name_func=self.bluetooth_lookup_name_func,
+            rssi_scanner=self.bluetooth_rssi_scanner,
+        )
 
         if self.config.mqtt.enabled and device.publish_to_mqtt:
             await asyncio.create_task(self.publish_device(device))
@@ -183,6 +148,7 @@ async def main():
         'mqtt': {
             'enabled': confuse.Choice([True, False], default=False),
             'host': confuse.String(default=DEFAULT_MQTT_HOST),
+            'log_level': confuse.Choice(['ERROR', 'WARNING', 'INFO', 'DEBUG'], default=DEFAULT_MQTT_LOG_LEVEL),
             'port': confuse.Integer(default=DEFAULT_MQTT_PORT),
             'protocol': confuse.String(default=DEFAULT_MQTT_PROTOCOL),
         },
@@ -192,13 +158,14 @@ async def main():
     }
     config = confuse.Configuration('bluetooth_tracker', __name__).get(config_template)
 
-    bt_tracker = BluetoothInfoRetriever()
-    bt_tracker = BluetoothInfoRetriever(rssi_scanner=FakeBluetoothScanner, lookup_name_func=lookup)
+    kwargs = {}
+    kwargs['bluetooth_rssi_scanner'] = FakeBluetoothScanner
+    kwargs['bluetooth_lookup_name_func'] = lookup
     detector = BluetoothPresenceDetector(
         config,
-        bt_tracker,
         mqtt.Client(),
         AsyncIOScheduler(),
+        **kwargs,
     )
     detector.start_detecting()
 
