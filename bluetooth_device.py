@@ -16,26 +16,23 @@ class BluetoothDevice:
     def __init__(
         self,
         address,
-        last_seen=None,
         logger=logging.getLogger('bluetooth'),
         lookup_rssi=DEFAULT_LOOKUP_RSSI,
         lookup_timeout=DEFAULT_LOOKUP_TIMEOUT,
-        name=None,
-        present=False,
         publish_to_mqtt=DEFAULT_PUBLISH_TO_MQTT,
-        rssi=None,
         scan_interval=DEFAULT_SCAN_INTERVAL,
     ):
         self.address = address
-        self.last_seen = last_seen
         self.logger = logger
         self.lookup_rssi = lookup_rssi
         self.lookup_timeout = lookup_timeout
-        self.name = name
-        self.present = present
         self.publish_to_mqtt = publish_to_mqtt
-        self.rssi = rssi
         self.scan_interval = scan_interval
+
+        self.last_seen = None
+        self.name = None
+        self.present = False
+        self.rssi = None
 
     async def lookup_device(
         self,
