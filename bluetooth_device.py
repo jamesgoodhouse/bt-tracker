@@ -58,8 +58,11 @@ class BluetoothDevice:
         else:
             self.logger.debug("no name found for device '{}'".format(self.address))
         if rssi != None:
-            self.rssi = rssi[0]
-            self.logger.debug("rssi '{}' found for device '{}'".format(self.rssi, self.address))
+            try:
+                self.rssi = rssi[0]
+                self.logger.debug("rssi '{}' found for device '{}'".format(self.rssi, self.address))
+            except (IndexError, TypeError):
+                self.logger.error("unexpected rssi '{}' for device '{}'".format(rssi, self.address))
         else:
             self.logger.debug("no rssi found for device '{}'".format(self.address))
 
