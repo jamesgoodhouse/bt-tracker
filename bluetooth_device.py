@@ -7,12 +7,12 @@ import re
 from bt_proximity import BluetoothRSSI
 from datetime import datetime
 
-class BluetoothDevice:
-    DEFAULT_LOOKUP_RSSI = False
-    DEFAULT_LOOKUP_TIMEOUT = 10
-    DEFAULT_PUBLISH_TO_MQTT = False
-    DEFAULT_SCAN_INTERVAL = 60
+DEFAULT_LOOKUP_RSSI = False
+DEFAULT_LOOKUP_TIMEOUT = 5
+DEFAULT_PUBLISH_TO_MQTT = False
+DEFAULT_SCAN_INTERVAL = 60
 
+class BluetoothDevice:
     def __init__(
         self,
         address,
@@ -54,19 +54,20 @@ class BluetoothDevice:
         tasks = [asyncio.create_task(lookup_device_name(self.address, self.lookup_timeout))]
         if self.lookup_rssi:
             tasks.append(asyncio.create_task(lookup_device_rssi(self.address)))
-        self.name, self.rssi = await asyncio.gather(*tasks)
+        self.name, rssi = await asyncio.gather(*tasks)
 
-        if self.name == None:
-            self.logger.debug("no name found for device '{}'".format(self.address))
-        else:
+        if self.name != None:
             self.logger.debug("name '{}' found for device '{}'".format(self.name, self.address))
-        if self.rssi == None:
-            self.logger.debug("no rssi found for device '{}'".format(self.address))
         else:
+            self.logger.debug("no name found for device '{}'".format(self.address))
+        if rssi != None:
+            self.rssi = rssi[0]
             self.logger.debug("rssi '{}' found for device '{}'".format(self.rssi, self.address))
+        else:
+            self.logger.debug("no rssi found for device '{}'".format(self.address))
 
         if self.name != None or self.rssi != None:
-            self.logger.info("device '{}' found".format(self.address))
+            self.logger.info("device '{}' found [name='{}', rssi='{}']".format(self.address, self.name, str(self.rssi)))
             self.last_seen = datetime.now()
             self.present = True
         else:
@@ -74,10 +75,6 @@ class BluetoothDevice:
             self.present = False
 
 class BluetoothDeviceConfuseTemplate(confuse.Template):
-    DEFAULT_SCAN_INTERVAL = 10
-    DEFAULT_LOOKUP_TIMEOUT = 5
-    DEFAULT_LOOKUP_RSSI = False
-    DEFAULT_PUBLISH_TO_MQTT = True
     MAC_ADDRESS_PATTERN = '([0-9a-fA-F]:?){12}'
 
     def __init__(

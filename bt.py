@@ -39,7 +39,7 @@ class FakeBluetoothScanner:
         self.mac = mac
 
     def request_rssi(self):
-        return 42
+        return (42,)
 
     def close(self):
         return
