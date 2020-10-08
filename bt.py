@@ -46,6 +46,16 @@ class BluetoothDeviceConfuseTemplate(confuse.Template):
     DEFAULT_LOOKUP_RSSI = False
     MAC_ADDRESS_PATTERN = '([0-9a-fA-F]:?){12}'
 
+    def __init__(
+        self,
+        default_scan_interval=DEFAULT_SCAN_INTERVAL,
+        default_lookup_timeout=DEFAULT_LOOKUP_TIMEOUT,
+        default_lookup_rssi=DEFAULT_LOOKUP_RSSI,
+    ):
+        self.default_scan_interval = default_scan_interval
+        self.default_lookup_rssi = default_lookup_rssi
+        self.default_lookup_timeout = default_lookup_timeout
+
     # FIXME: this is kinda rough
     def convert(self, value, view):
         if 'address' not in value:
@@ -55,7 +65,7 @@ class BluetoothDeviceConfuseTemplate(confuse.Template):
 
         address = value['address']
 
-        scan_interval = self.DEFAULT_SCAN_INTERVAL
+        scan_interval = self.default_scan_interval
         if 'scan_interval' in value:
             si = value['scan_interval']
             if isinstance(si, int):
@@ -65,7 +75,7 @@ class BluetoothDeviceConfuseTemplate(confuse.Template):
             else:
                 raise confuse.exceptions.ConfigValueError(u'\'scan_interval\' must be an integer')
 
-        lookup_timeout = self.DEFAULT_LOOKUP_TIMEOUT
+        lookup_timeout = self.default_lookup_timeout
         if 'lookup_timeout' in value:
             lt = value['lookup_timeout']
             if isinstance(lt, int):
@@ -75,7 +85,7 @@ class BluetoothDeviceConfuseTemplate(confuse.Template):
             else:
                 raise confuse.exceptions.ConfigValueError(u'\'lookup_timeout\' must be an integer')
 
-        lookup_rssi = self.DEFAULT_LOOKUP_RSSI
+        lookup_rssi = self.default_lookup_rssi
         if 'lookup_rssi' in value:
             lr = value['lookup_rssi']
             if isinstance(lr, bool):
