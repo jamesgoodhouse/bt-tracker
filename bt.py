@@ -13,12 +13,24 @@ from bt_proximity import BluetoothRSSI
 from datetime import datetime
 from time import sleep
 
+DEFAULT_LOG_LEVEL = 'INFO'
 DEFAULT_MQTT_HOST = 'localhost'
 DEFAULT_MQTT_PORT = 1833
 DEFAULT_MQTT_PROTOCOL = 'MQTTv311'
+DEFAULT_SCHEDULER_LOG_LEVEL = None
 
 class BluetoothDevice:
-    def __init__(self, address, scan_interval, lookup_timeout, lookup_rssi, rssi=None, name=None, present=False, last_seen=None):
+    def __init__(
+        self,
+        address,
+        scan_interval,
+        lookup_timeout,
+        lookup_rssi,
+        rssi=None,
+        name=None,
+        present=False,
+        last_seen=None,
+    ):
         self.address = address
         self.scan_interval = scan_interval
         self.lookup_timeout = lookup_timeout
@@ -75,6 +87,7 @@ class BluetoothDeviceConfuseTemplate(confuse.Template):
 
 class BluetoothInfoRetriever:
     def __init__(self, rssi_scanner=BluetoothRSSI, lookup_name_func=bluetooth.lookup_name):
+        self.logger = logging.getLogger('bluetooth')
         self.rssi_scanner = rssi_scanner
         self.lookup_name_func = lookup_name_func
 
@@ -94,16 +107,16 @@ class BluetoothInfoRetriever:
         device.name, device.rssi = await asyncio.gather(*tasks)
 
         if device.name == None:
-            logging.debug("no name found for device '{}'".format(device.address))
+            self.logger.debug("no name found for device '{}'".format(device.address))
         if device.rssi == None:
-            logging.debug("no rssi found for device '{}'".format(device.address))
+            self.logger.debug("no rssi found for device '{}'".format(device.address))
 
         if device.name != None or device.rssi != None:
-            logging.info("device '{}' found".format(device.address))
+            self.logger.info("device '{}' found".format(device.address))
             device.last_seen = datetime.now()
             device.present = True
         else:
-            logging.info("device '{}' not found".format(device.address))
+            self.logger.info("device '{}' not found".format(device.address))
             device.last_seen = None
             device.present = False
 
@@ -129,7 +142,7 @@ class GracefulKiller:
             )
 
     def exit_gracefully(self, signum, frame):
-        logging.info("Received '{}' signal".format(signal.strsignal(signum)))
+        logging.debug("received '{}' signal".format(signal.strsignal(signum)))
         self.kill_now = True
 
 class FakeBluetoothScanner:
@@ -137,28 +150,29 @@ class FakeBluetoothScanner:
         self.mac = mac
 
     def request_rssi(self):
-        return 59
+        return None
 
     def close(self):
         return
 
 def lookup(addr, timeout):
-    return 'tacobell'
+    return None
 
 async def main():
+    log_levels = ['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG']
     config_template = {
         'devices': confuse.Sequence(
             # BluetoothDeviceConfuseTemplate(default_scan_interval=15, default_lookup_rssi=True),
             BluetoothDeviceConfuseTemplate(),
         ),
-        'log_level': confuse.Choice(['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG'], default='INFO'),
+        'log_level': confuse.Choice(log_levels, default=DEFAULT_LOG_LEVEL),
         'mqtt': {
             'host': confuse.String(default=DEFAULT_MQTT_HOST),
             'port': confuse.Integer(default=DEFAULT_MQTT_PORT),
             'protocol': confuse.String(default=DEFAULT_MQTT_PROTOCOL),
         },
         'scheduler': {
-            'log_level': confuse.Choice(['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG'], default=None),
+            'log_level': confuse.Choice(log_levels, default=DEFAULT_SCHEDULER_LOG_LEVEL),
         },
     }
     config = confuse.Configuration('bluetooth_tracker', __name__).get(config_template)
@@ -197,6 +211,7 @@ async def main():
     while not killer.kill_now:
         await asyncio.sleep(1)
 
+    logging.info('shutting down')
     scheduler.shutdown()
 
 if __name__ == "__main__":
