@@ -118,8 +118,12 @@ class BluetoothInfoRetriever:
 
         if device.name == None:
             self.logger.debug("no name found for device '{}'".format(device.address))
+        else:
+            self.logger.debug("name '{}' found for device '{}'".format(device.name, device.address))
         if device.rssi == None:
             self.logger.debug("no rssi found for device '{}'".format(device.address))
+        else:
+            self.logger.debug("rssi '{}' found for device '{}'".format(device.rssi, device.address))
 
         if device.name != None or device.rssi != None:
             self.logger.info("device '{}' found".format(device.address))
