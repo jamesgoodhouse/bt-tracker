@@ -191,9 +191,8 @@ async def main():
     }
     config = confuse.Configuration('bluetooth_tracker', __name__).get(config_template)
 
-    logging.basicConfig()
     log_level = getattr(logging, config.log_level) # logging.getLevelName works, but that func shouldnt do what it does
-    logging.getLogger().setLevel(log_level)
+    logging.basicConfig(level=log_level)
 
     scheduler_log_level = log_level
     if config.scheduler.log_level != None:
