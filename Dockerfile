@@ -6,9 +6,11 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt /requirements.txt
-RUN python3 -m pip install -r requirements.txt
-COPY bt.py /bt.py
-COPY entrypoint.sh /entrypoint.sh
+WORKDIR /usr/src/detector
 
-ENTRYPOINT ["/entrypoint.sh"]
+COPY requirements.txt ./
+RUN python3 -m pip install -r requirements.txt
+
+COPY ./ ./
+
+CMD ["python3", "./bt.py"]
